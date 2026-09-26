@@ -8,6 +8,7 @@
     "start": "next start"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.117.2",
     "next": "16.2.10",
     "openai": "^6.46.0",
     "pdf-parse": "^2.4.5",

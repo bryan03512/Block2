@@ -1,10 +1,35 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { supabase } from './lib/supabaseClient';
 
 const STORAGE_KEY = 'course-companion-chat';
 // Sent to the AI so it has context, capped so a long chat doesn't balloon every request.
 const HISTORY_LIMIT = 12;
+
+async function loadCloudChat() {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return null;
+  const { data, error } = await supabase.from('saves').select('chat').eq('user_id', user.id).maybeSingle();
+  if (error) {
+    console.error('loadCloudChat failed:', error);
+    return null;
+  }
+  return data ? data.chat : null;
+}
+
+async function saveCloudChat(payload) {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return;
+  const { error } = await supabase
+    .from('saves')
+    .upsert({ user_id: user.id, chat: payload, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+  if (error) console.error('saveCloudChat failed:', error);
+}
 
 function makeId() {
   return typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
@@ -78,6 +103,8 @@ export default function Home() {
   const [elapsed, setElapsed] = useState(0);
   const timerRef = useRef(null);
   const bottomRef = useRef(null);
+  const localUpdatedAtRef = useRef(0);
+  const cloudSyncTimerRef = useRef(null);
 
   // Load any saved conversation once on mount, so it survives navigating to
   // another page and back (state would otherwise reset every time this
@@ -85,7 +112,17 @@ export default function Home() {
   useEffect(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) setMessages(JSON.parse(saved));
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          // old format from before cloud sync existed - no timestamp
+          setMessages(parsed);
+          localUpdatedAtRef.current = 0;
+        } else if (parsed && Array.isArray(parsed.messages)) {
+          setMessages(parsed.messages);
+          localUpdatedAtRef.current = parsed.updatedAt || 0;
+        }
+      }
     } catch {
       // ignore corrupted/blocked storage
     } finally {
@@ -93,13 +130,48 @@ export default function Home() {
     }
   }, []);
 
+  // Once hydrated from localStorage, check for a cloud save and adopt it if
+  // it's newer - handles opening this page already logged in on a device
+  // that's never seen this conversation before.
   useEffect(() => {
     if (!hydrated) return;
+    (async () => {
+      const cloud = await loadCloudChat();
+      if (cloud && (cloud.updatedAt || 0) >= localUpdatedAtRef.current) {
+        setMessages(cloud.messages || []);
+        localUpdatedAtRef.current = cloud.updatedAt || Date.now();
+      }
+    })();
+  }, [hydrated]);
+
+  // Re-check the cloud save whenever the account widget reports a fresh login.
+  useEffect(() => {
+    function handleLogin() {
+      (async () => {
+        const cloud = await loadCloudChat();
+        if (cloud && (cloud.updatedAt || 0) >= localUpdatedAtRef.current) {
+          setMessages(cloud.messages || []);
+          localUpdatedAtRef.current = cloud.updatedAt || Date.now();
+        }
+      })();
+    }
+    window.addEventListener('account:login', handleLogin);
+    return () => window.removeEventListener('account:login', handleLogin);
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const updatedAt = Date.now();
+    localUpdatedAtRef.current = updatedAt;
+    const payload = { messages, updatedAt };
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     } catch {
       // ignore write failures (private browsing, storage full, etc.)
     }
+
+    if (cloudSyncTimerRef.current) clearTimeout(cloudSyncTimerRef.current);
+    cloudSyncTimerRef.current = setTimeout(() => saveCloudChat(payload), 3000);
   }, [messages, hydrated]);
 
   useEffect(() => {
@@ -108,11 +180,14 @@ export default function Home() {
 
   function clearChat() {
     setMessages([]);
+    const updatedAt = Date.now();
+    localUpdatedAtRef.current = updatedAt;
     try {
       localStorage.removeItem(STORAGE_KEY);
     } catch {
       // ignore
     }
+    saveCloudChat({ messages: [], updatedAt });
   }
 
   async function handleSubmit(e) {
