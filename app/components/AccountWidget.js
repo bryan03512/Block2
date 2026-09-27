@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { supabase } from '../lib/supabaseClient';
 
 export default function AccountWidget() {
@@ -79,54 +80,57 @@ export default function AccountWidget() {
         </div>
       )}
 
-      {showModal && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
-          onClick={(e) => e.target === e.currentTarget && setShowModal(false)}
-        >
-          <div className="w-[min(320px,90vw)] rounded-md border border-[#1fae0c] bg-[#0b0f0c] p-4">
-            <div className="mb-3 flex items-center justify-between text-[#39ff14]">
-              <span>{mode === 'login' ? 'log in' : 'sign up'}</span>
-              <button onClick={() => setShowModal(false)} className="text-lg leading-none text-[#6b8f6b]">
-                &times;
-              </button>
+      {showModal &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
+            onClick={(e) => e.target === e.currentTarget && setShowModal(false)}
+          >
+            <div className="w-[min(320px,90vw)] rounded-md border border-[#1fae0c] bg-[#0b0f0c] p-4">
+              <div className="mb-3 flex items-center justify-between text-[#39ff14]">
+                <span>{mode === 'login' ? 'log in' : 'sign up'}</span>
+                <button onClick={() => setShowModal(false)} className="text-lg leading-none text-[#6b8f6b]">
+                  &times;
+                </button>
+              </div>
+              <form onSubmit={handleSubmit} className="flex flex-col gap-2.5">
+                <input
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="email"
+                  className="rounded border border-[#1c3a1c] bg-[#05070a] px-3 py-2 text-sm text-[#c8ffcf] placeholder:text-[#4a5a4a] focus:border-[#39ff14] focus:outline-none"
+                />
+                <input
+                  type="password"
+                  required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="password"
+                  className="rounded border border-[#1c3a1c] bg-[#05070a] px-3 py-2 text-sm text-[#c8ffcf] placeholder:text-[#4a5a4a] focus:border-[#39ff14] focus:outline-none"
+                />
+                {error && <p className="text-xs text-[#ff8080]">{error}</p>}
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="rounded border border-[#1fae0c] px-3 py-2 text-sm text-[#39ff14] transition hover:bg-[#39ff14] hover:text-[#04150a] disabled:opacity-50"
+                >
+                  {loading ? 'working...' : mode === 'login' ? 'log in' : 'sign up'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMode(mode === 'login' ? 'signup' : 'login')}
+                  className="text-xs text-[#00e5ff]"
+                >
+                  {mode === 'login' ? 'need an account? sign up' : 'have an account? log in'}
+                </button>
+              </form>
             </div>
-            <form onSubmit={handleSubmit} className="flex flex-col gap-2.5">
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="email"
-                className="rounded border border-[#1c3a1c] bg-[#05070a] px-3 py-2 text-sm text-[#c8ffcf] placeholder:text-[#4a5a4a] focus:border-[#39ff14] focus:outline-none"
-              />
-              <input
-                type="password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="password"
-                className="rounded border border-[#1c3a1c] bg-[#05070a] px-3 py-2 text-sm text-[#c8ffcf] placeholder:text-[#4a5a4a] focus:border-[#39ff14] focus:outline-none"
-              />
-              {error && <p className="text-xs text-[#ff8080]">{error}</p>}
-              <button
-                type="submit"
-                disabled={loading}
-                className="rounded border border-[#1fae0c] px-3 py-2 text-sm text-[#39ff14] transition hover:bg-[#39ff14] hover:text-[#04150a] disabled:opacity-50"
-              >
-                {loading ? 'working...' : mode === 'login' ? 'log in' : 'sign up'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setMode(mode === 'login' ? 'signup' : 'login')}
-                className="text-xs text-[#00e5ff]"
-              >
-                {mode === 'login' ? 'need an account? sign up' : 'have an account? log in'}
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body,
+        )}
     </>
   );
 }
