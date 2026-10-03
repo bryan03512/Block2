@@ -35,6 +35,62 @@ function makeId() {
   return typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
 }
 
+// Downscaled/re-encoded client-side before ever leaving the browser - a
+// straight-from-camera photo can be several MB and several thousand px on a
+// side, which is both slow to upload on a classroom connection and wasteful
+// once it's sitting in chat history (localStorage + the cloud save) forever.
+// Re-encoding to JPEG also normalizes HEIC/PNG/etc. into something every
+// vision model reliably accepts.
+const MAX_IMAGE_DIM = 1024;
+const IMAGE_QUALITY = 0.82;
+
+function resizeImageFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Could not read that file.'));
+    reader.onload = () => {
+      const img = new window.Image();
+      img.onerror = () => reject(new Error('Could not read that image.'));
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > MAX_IMAGE_DIM || height > MAX_IMAGE_DIM) {
+          const scale = MAX_IMAGE_DIM / Math.max(width, height);
+          width = Math.round(width * scale);
+          height = Math.round(height * scale);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', IMAGE_QUALITY));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// A user message's content is either a plain string (every message before
+// this feature existed, and every text-only message since) or an OpenAI-
+// style multimodal array ([{type:'text',...}, {type:'image_url',...}]) when
+// an image was attached - the chat API route forwards `content` straight
+// through untouched either way, so no server-side change was needed for this.
+function MessageContent({ content }) {
+  if (!Array.isArray(content)) return content;
+  const text = content.find((part) => part.type === 'text')?.text;
+  const imageUrl = content.find((part) => part.type === 'image_url')?.image_url?.url;
+  return (
+    <div className="space-y-2">
+      {imageUrl && (
+        // eslint-disable-next-line @next/next/no-img-element -- a data: URL, not a remote image next/image can optimize
+        <img src={imageUrl} alt="attached" className="max-h-56 rounded border border-[#0e3a44] object-contain" />
+      )}
+      {text && <p className="leading-relaxed whitespace-pre-wrap">{text}</p>}
+    </div>
+  );
+}
+
 function FormattedResponse({ text }) {
   const blocks = [];
   let currentList = null;
@@ -101,10 +157,47 @@ export default function Home() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [pendingImage, setPendingImage] = useState(null); // { dataUrl, fileName }
+  const [imageError, setImageError] = useState('');
   const timerRef = useRef(null);
   const bottomRef = useRef(null);
   const localUpdatedAtRef = useRef(0);
   const cloudSyncTimerRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const inputRef = useRef(null);
+
+  async function handleImageFile(file) {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setImageError('Only image files are supported.');
+      return;
+    }
+    setImageError('');
+    try {
+      const dataUrl = await resizeImageFile(file);
+      setPendingImage({ dataUrl, fileName: file.name });
+      inputRef.current?.focus();
+    } catch {
+      setImageError('Could not read that image.');
+    }
+  }
+
+  function handleFileInputChange(e) {
+    handleImageFile(e.target.files?.[0]);
+    e.target.value = ''; // so picking the same file again still fires onChange
+  }
+
+  function handlePaste(e) {
+    const item = Array.from(e.clipboardData?.items || []).find((it) => it.type.startsWith('image/'));
+    if (!item) return;
+    e.preventDefault();
+    handleImageFile(item.getAsFile());
+  }
+
+  function handleDrop(e) {
+    e.preventDefault();
+    handleImageFile(e.dataTransfer?.files?.[0]);
+  }
 
   // Load any saved conversation once on mount, so it survives navigating to
   // another page and back (state would otherwise reset every time this
@@ -193,14 +286,22 @@ export default function Home() {
   async function handleSubmit(e) {
     e.preventDefault();
     const text = input.trim();
-    if (!text || loading) return;
+    if ((!text && !pendingImage) || loading) return;
 
-    const userMessage = { id: makeId(), role: 'user', content: text };
+    const content = pendingImage
+      ? [
+          { type: 'text', text: text || 'What is in this image?' },
+          { type: 'image_url', image_url: { url: pendingImage.dataUrl } },
+        ]
+      : text;
+
+    const userMessage = { id: makeId(), role: 'user', content };
     const assistantId = makeId();
     const history = [...messages, userMessage].slice(-HISTORY_LIMIT);
 
     setMessages((current) => [...current, userMessage, { id: assistantId, role: 'assistant', content: '', error: false }]);
     setInput('');
+    setPendingImage(null);
     setLoading(true);
     setElapsed(0);
 
@@ -297,7 +398,7 @@ export default function Home() {
                           )}
                         </>
                       ) : (
-                        m.content
+                        <MessageContent content={m.content} />
                       )}
                     </div>
                   </div>
@@ -315,20 +416,57 @@ export default function Home() {
               </div>
             )}
 
+            {pendingImage && (
+              <div className="mb-3 flex items-center gap-3 rounded border border-[#0e3a44] bg-[#062226] px-3 py-2">
+                {/* eslint-disable-next-line @next/next/no-img-element -- a data: URL, not a remote image next/image can optimize */}
+                <img src={pendingImage.dataUrl} alt="" className="h-12 w-12 rounded object-cover" />
+                <span className="flex-1 truncate text-xs text-[#8fe9ff]">{pendingImage.fileName}</span>
+                <button
+                  type="button"
+                  onClick={() => setPendingImage(null)}
+                  className="shrink-0 text-xs text-[#ff8080] hover:underline"
+                >
+                  remove
+                </button>
+              </div>
+            )}
+            {imageError && <p className="mb-3 text-xs text-[#ff8080]">{imageError}</p>}
+
             <form onSubmit={handleSubmit} className="flex flex-col gap-3 sm:flex-row">
-              <div className="flex flex-1 items-center rounded border border-[#1c3a1c] bg-[#05070a] px-3 focus-within:border-[#39ff14]">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                onChange={handleFileInputChange}
+                className="hidden"
+              />
+              <div
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={handleDrop}
+                className="flex flex-1 items-center rounded border border-[#1c3a1c] bg-[#05070a] px-3 focus-within:border-[#39ff14]"
+              >
                 <span className="text-[#39ff14]">&gt;</span>
                 <input
+                  ref={inputRef}
                   type="text"
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
-                  placeholder="ask a question..."
+                  onPaste={handlePaste}
+                  placeholder={pendingImage ? 'say something about the image (optional)...' : 'ask a question, or attach/paste an image...'}
                   className="w-full bg-transparent px-2 py-2.5 text-[#c8ffcf] placeholder:text-[#4a5a4a] focus:outline-none"
                 />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  title="attach an image"
+                  className="shrink-0 rounded border border-[#1c3a1c] px-2 py-1 text-xs text-[#6b8f6b] transition hover:border-[#39ff14] hover:text-[#39ff14]"
+                >
+                  + image
+                </button>
               </div>
               <button
                 type="submit"
-                disabled={loading || !input.trim()}
+                disabled={loading || (!input.trim() && !pendingImage)}
                 className="inline-flex items-center justify-center gap-2 rounded border border-[#1fae0c] px-5 py-2.5 font-medium text-[#39ff14] transition hover:bg-[#39ff14] hover:text-[#04150a] disabled:cursor-not-allowed disabled:border-[#2a352a] disabled:text-[#4a5a4a] disabled:hover:bg-transparent"
               >
                 {loading && (
