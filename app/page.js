@@ -271,6 +271,17 @@ export default function Home() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [messages]);
 
+  // Grows the textarea with its content (up to the max-h-40 cap, where it
+  // starts scrolling instead) - a plain <textarea rows={1}> stays a fixed
+  // height no matter how much is typed, so this is what actually makes
+  // multi-line input feel natural instead of just technically possible.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [input]);
+
   function clearChat() {
     setMessages([]);
     const updatedAt = Date.now();
@@ -443,23 +454,32 @@ export default function Home() {
               <div
                 onDragOver={(e) => e.preventDefault()}
                 onDrop={handleDrop}
-                className="flex flex-1 items-center rounded border border-[#1c3a1c] bg-[#05070a] px-3 focus-within:border-[#39ff14]"
+                className="flex flex-1 items-start rounded border border-[#1c3a1c] bg-[#05070a] px-3 focus-within:border-[#39ff14]"
               >
-                <span className="text-[#39ff14]">&gt;</span>
-                <input
+                <span className="mt-2.5 text-[#39ff14]">&gt;</span>
+                <textarea
                   ref={inputRef}
-                  type="text"
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onPaste={handlePaste}
+                  onKeyDown={(e) => {
+                    // Enter sends, like before - shift+enter (or any other
+                    // modifier) inserts a real newline instead, same as
+                    // every other multi-line chat box.
+                    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+                      e.preventDefault();
+                      e.currentTarget.form?.requestSubmit();
+                    }
+                  }}
                   placeholder={pendingImage ? 'say something about the image (optional)...' : 'ask a question, or attach/paste an image...'}
-                  className="w-full bg-transparent px-2 py-2.5 text-[#c8ffcf] placeholder:text-[#4a5a4a] focus:outline-none"
+                  rows={1}
+                  className="max-h-40 w-full resize-none overflow-y-auto bg-transparent px-2 py-2.5 text-[#c8ffcf] placeholder:text-[#4a5a4a] focus:outline-none"
                 />
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   title="attach an image"
-                  className="shrink-0 rounded border border-[#1c3a1c] px-2 py-1 text-xs text-[#6b8f6b] transition hover:border-[#39ff14] hover:text-[#39ff14]"
+                  className="mt-2 shrink-0 rounded border border-[#1c3a1c] px-2 py-1 text-xs text-[#6b8f6b] transition hover:border-[#39ff14] hover:text-[#39ff14]"
                 >
                   + image
                 </button>
@@ -475,6 +495,7 @@ export default function Home() {
                 {loading ? `running... ${elapsed}s` : 'run'}
               </button>
             </form>
+            <p className="mt-2 text-xs text-[#4a5a4a]"># enter to send, shift+enter for a new line</p>
           </div>
         </div>
       </div>
